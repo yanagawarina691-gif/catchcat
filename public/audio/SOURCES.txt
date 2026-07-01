@@ -1,0 +1,14 @@
+音效来源（随仓库分发时请保留本说明）
+
+1) BigSoundBank (Joseph SARDIN) — CC0 公众领域，可任意用于商业/修改，无强制署名
+   - cat-mew-little.mp3  ← 站内 Little Meow of a Cat #1 (s0494)
+   - cat-mew-brief.mp3    ← 站内 Meow Cat #10 (s1898)
+   - bgm-main.mp3         ← Countryside #3 (s1911)，CC0；已截为前 60 秒并转码以控制体积，循环播放
+   原站: https://bigsoundbank.com
+
+2) Mixkit (Envato) — Mixkit Sound Effects License，免费可商用
+   - sfx-catch.mp3   ← SFX 预览 id 270（约 0.5s 预览，用于抓中提示）
+   - sfx-win-chime.mp3 ← SFX 预览 id 2015（约 0.5s 预览，用于胜利）
+   原站: https://mixkit.co
+
+若需完整无损版本，请至原站对应条目下载；当前文件为经授权下载的官方便捷文件。
