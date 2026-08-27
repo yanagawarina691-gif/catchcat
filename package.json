@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "description": "寻喵大作战 — 360° 全景找猫浏览器游戏",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "packageManager": "npm@11.3.0",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

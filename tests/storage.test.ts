@@ -22,5 +22,7 @@ describe('best score storage', () => {
 
   it('treats malformed data as missing', () => {
     expect(readBest(memoryStorage('not-a-number'))).toBeNull();
+    expect(readBest(memoryStorage(''))).toBeNull();
+    expect(readBest(memoryStorage('-5'))).toBeNull();
   });
 });

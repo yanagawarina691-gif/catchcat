@@ -50,15 +50,34 @@ npm run test:e2e
 
 ```text
 src/
-  game/       规则、配置和成绩存储
+  game/       规则、配置、成绩存储与音频系统
   render/     Three.js 渲染生命周期
-  ui/         DOM 设置与持久化
-  main.ts     现有游戏编排层（持续向模块迁移）
+  ui/         DOM 设置、持久化与分享卡绘制
+  main.ts     游戏编排层（状态机/输入/陀螺仪/HUD）
 public/
   images/     游戏图片
   audio/      背景音乐、音效与来源记录
 tests/        单元测试与浏览器测试
 ```
+
+## 测试
+
+单元测试（Vitest）覆盖游戏规则、成绩存储与设置持久化：
+
+```bash
+npm test
+```
+
+浏览器测试（Playwright）包含桌面与移动端两个 project：
+
+```bash
+npm run test:e2e
+```
+
+E2E 通关流程使用本地测试模式：在 `localhost` / `127.0.0.1` 访问 `/?e2e=1` 时，
+猫固定出现在视野正中央且第三只不会逃跑，便于稳定断言；该模式在其他域名（如线上
+GitHub Pages）不生效，不会影响真实游玩。另有 `/?catcal=1` 校准模式，用于把新躲藏点
+写入 `src/game/config.ts` 的 `CAT_HIDE_SPOTS`。
 
 ## 发布
 

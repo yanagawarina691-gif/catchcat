@@ -14,17 +14,8 @@ export default tseslint.config(
     rules: {
       '@typescript-eslint/no-explicit-any': 'off',
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
-    },
-  },
-  {
-    files: ['src/main.ts'],
-    rules: {
-      '@typescript-eslint/no-unused-vars': 'off',
-      '@typescript-eslint/ban-ts-comment': 'off',
-      '@typescript-eslint/no-unused-expressions': 'off',
-      'no-empty': 'off',
-      'no-constant-condition': 'off',
-      'no-var': 'off',
+      // 游戏类代码大量使用「失败静默」的容错模式，允许空 catch 块
+      'no-empty': ['error', { allowEmptyCatch: true }],
     },
   },
 );
