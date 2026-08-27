@@ -36,5 +36,6 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      # desktop 用 Chromium，mobile 用 WebKit（iPhone 设备描述默认 webkit）
+      - run: npx playwright install --with-deps chromium webkit
       - run: npm run test:e2e
