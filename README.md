@@ -90,3 +90,12 @@ GitHub Pages）不生效，不会影响真实游玩。另有 `/?catcal=1` 校准
 ---
 
 Catchcat is a mobile-first 360° hidden-object browser game. Rotate your device or drag the panorama, catch three cats, and share your result. Gyroscope access is optional and the complete game remains playable with pointer input.
+
+## 核心职责
+
+- `src/game/session.ts`：游戏阶段、超时、抓取计数、第三只逃跑与成绩数据；显式接收时间，可脱离浏览器测试。
+- `src/ui/result-view.ts`：结算、演示排行榜与分享卡；直接读取成绩数据，不解析页面文案。
+- `src/ui/win-effects.ts`：庆祝动画与动画资源清理。
+- `src/main.ts`：浏览器初始化、输入与场景绘制，连接游戏状态和 UI。
+
+状态测试覆盖正常开场、超时、第三只逃跑与冷却、通关和重新开始。浏览器测试覆盖桌面/手机通关、分享卡不依赖结算文案以及重新开始。
