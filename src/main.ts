@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { GAME_CONFIG, CAT_HIDE_SPOTS } from './game/config';
-import { pickHideSpot, shouldThirdCatEscape, elapsedSeconds } from './game/rules';
+import { pickHideSpot } from './game/rules';
+import { GameSession } from './game/session';
+import { createResultView } from './ui/result-view';
 import { settingsStore, applySettings } from './ui/settings';
 import { saveBest } from './game/storage';
 import { capPixelRatio, bindWebGLLifecycle } from './render/lifecycle';
@@ -17,7 +19,6 @@ import {
   playWinCelebration,
   ensureAudio,
 } from './game/audio';
-import { drawShareCardTime } from './ui/share-card';
 
 (function () {
   'use strict';
@@ -26,7 +27,6 @@ import { drawShareCardTime } from './ui/share-card';
   const TWO_PI = Math.PI * 2;
   const HUNT_LIMIT_MS = GAME_CONFIG.huntLimitMs;
   const INTRO_MS = GAME_CONFIG.introMs;
-  const FLUFF_MS = GAME_CONFIG.fluffMs;
   const CAT_HINT_NO_SIGHT_MS = 3000;
   const INTRO_SUB_DEFAULT = '帮我找到猫猫，抓到可能也会跑哦';
   const TAP_MOVE_MAX = 40;
@@ -44,30 +44,9 @@ import { drawShareCardTime } from './ui/share-card';
   const GYRO_GAIN = 0.95;
   const GYRO_MAX_STEP_DEG = 7;
   const GYRO_APPLY_MIN = 0.03;
-  const WIN_FX_MS = 3200;
   const CAUGHT_IMAGE_MS = 500;
   const CAT_ESCAPE_SUB_MS = 1000;
   const dragThreshold = 14;
-
-  const WIN_CONFETTI_COLORS = [
-    '#ff8fb3',
-    '#ffe066',
-    '#fff0e8',
-    '#a8e6cf',
-    '#e85d8a',
-    '#ffd0e8',
-    '#ffaa90',
-    '#c8b5ff',
-  ];
-
-  /** 结算页虚拟排行榜（总用时秒数，与玩家合并后按时间升序，纯演示） */
-  const WIN_LEADERBOARD_VIRTUAL = [
-    { name: '摸鱼第一名', timeSec: 8.4 },
-    { name: '橘座本座', timeSec: 11.2 },
-    { name: '猫爪印', timeSec: 14.6 },
-    { name: '云吸猫大师', timeSec: 19.1 },
-    { name: '路人小周', timeSec: 24.8 },
-  ];
 
   /**
    * E2E 测试专用模式：仅在本机 localhost + ?e2e=1 时生效，生产环境带参访问也不会改变行为。
@@ -121,7 +100,15 @@ import { drawShareCardTime } from './ui/share-card';
     const btnBackWin = getEl<HTMLButtonElement>('btnBackWin');
     const btnSaveCard = getEl<HTMLButtonElement>('btnSaveCard');
     const cardCanvas = getEl<HTMLCanvasElement>('cardCanvas');
-    const cctx = cardCanvas.getContext('2d')!;
+    const resultView = createResultView({
+      win: elWin,
+      card: elCardPanel,
+      time: getEl('winTimeText'),
+      leaderboard: elWinLeaderboardList,
+      cardCanvas,
+      confettiCanvas: winFxCanvas,
+    });
+    let resultTimer = 0;
 
     const introSubDisplay = ((): string => {
       const t = elGameIntroSubWrap.getAttribute('data-intro-text');
@@ -131,47 +118,8 @@ import { drawShareCardTime } from './ui/share-card';
       return INTRO_SUB_DEFAULT;
     })();
 
-    let winConfettiRaf = 0;
     let catEscapeSubHideTimer = 0;
     let catEscapeSubCleanupTimer = 0;
-
-    interface LeaderboardRow {
-      name: string;
-      timeSec: number;
-      you: boolean;
-    }
-
-    function formatLeaderboardTime(sec: number): string {
-      const t = Number(sec);
-      const v = !isFinite(t) || t < 0 ? 0 : t;
-      return String(Math.round(v * 10) / 10) + ' 秒';
-    }
-
-    function addLbSpan(parent: HTMLElement, cls: string, text: string): void {
-      const s = document.createElement('span');
-      s.className = cls;
-      s.textContent = text;
-      parent.appendChild(s);
-    }
-
-    function renderWinLeaderboard(secStr: string): void {
-      const sn = parseFloat(String(secStr));
-      const psec = !isFinite(sn) || sn < 0 ? 20 : sn;
-      const rows: LeaderboardRow[] = WIN_LEADERBOARD_VIRTUAL.map((v) => ({ ...v, you: false }));
-      rows.push({ name: '你（本次）', timeSec: psec, you: true });
-      rows.sort((a, b) => a.timeSec - b.timeSec);
-      const top = rows.slice(0, 6);
-      elWinLeaderboardList.textContent = '';
-      for (let k = 0; k < top.length; k += 1) {
-        const r = top[k]!;
-        const li = document.createElement('li');
-        li.className = 'win-leaderboard-row' + (r.you ? ' is-you' : '');
-        addLbSpan(li, 'win-lb-rank', String(k + 1));
-        addLbSpan(li, 'win-lb-name', r.name);
-        addLbSpan(li, 'win-lb-time', formatLeaderboardTime(r.timeSec));
-        elWinLeaderboardList.appendChild(li);
-      }
-    }
 
     const handImg = new Image();
     let handImageReady = false;
@@ -192,11 +140,6 @@ import { drawShareCardTime } from './ui/share-card';
     };
     handImg.src = './images/手部2.png';
 
-    /** 战绩分享卡底图（设计稿整图，见 images/ 喵分享卡片.png） */
-    const SHARE_CARD_TEMPLATE = './images/喵分享卡片.png';
-    const shareCardBgImg = new Image();
-    shareCardBgImg.src = SHARE_CARD_TEMPLATE;
-
     const CAT_IMG_PATHS = ['./images/猫腰.png', './images/猫趴1.png', './images/猫躺1.png'];
     const CAT_IMG_CAUGHT = './images/猫被抓.png';
     const catImgEls: HTMLImageElement[] = [];
@@ -207,23 +150,6 @@ import { drawShareCardTime } from './ui/share-card';
     }
     const catImgCaught = new Image();
     catImgCaught.src = CAT_IMG_CAUGHT;
-
-    function tryRedrawShareCardIfOpen(): void {
-      try {
-        if (getComputedStyle(elCardPanel).display === 'none') {
-          return;
-        }
-        const wtx = document.getElementById('winTimeText');
-        const tRaw = wtx ? wtx.textContent : '';
-        const m2 = tRaw ? tRaw.match(/([\d.]+)\s*秒/) : null;
-        if (m2) {
-          drawShareCardTime(cctx, shareCardBgImg, m2[1]!);
-        }
-      } catch {
-        /* ignore */
-      }
-    }
-    shareCardBgImg.addEventListener('load', tryRedrawShareCardIfOpen, { passive: true });
 
     let catPicIndex = 0;
     let catCaughtUntil = 0;
@@ -252,19 +178,8 @@ import { drawShareCardTime } from './ui/share-card';
     let gyroQPrevValid = false;
     let panoReady = false;
 
-    let gameStarted = false;
-    type GamePhase = 'menu' | 'intro' | 'hunt' | 'fluff' | 'won';
-    let phase: GamePhase = 'menu';
-    let catches = 0;
-    let tGameStart = 0;
-    let tCatSpawn = 0;
-    /** 本轮内最近一次猫在屏幕可见区内的时间；0 表示本局尚未看到猫 */
+    const session = new GameSession();
     let tLastSawCatOnScreen = 0;
-    /** 第三只已「溜走」次数，最多 3 次，之后下一只必中通关 */
-    let thirdCatEscapes = 0;
-    let thirdCatEscapeCooldownTimer = 0;
-    let catchCountedThisSpawn = false;
-    const catchRoundTimesSec: number[] = [];
     let catTheta = 0;
     let catPhi = Math.PI / 2;
     let lastCatSpotIndex = -1;
@@ -278,9 +193,7 @@ import { drawShareCardTime } from './ui/share-card';
     let gyroListenerAttached = false;
     let onOrientationChangeHandler: (() => void) | null = null;
     let handT = 0;
-    let fluffT0 = 0;
     let lastFrame = 0;
-    let tIntroEnd = 0;
 
     function mod(a: number): number {
       return ((a % TWO_PI) + TWO_PI) % TWO_PI;
@@ -355,7 +268,6 @@ import { drawShareCardTime } from './ui/share-card';
      * 打开开发者工具控制台，会打印一条 JSON，把其中的 theta/phi 复制进 src/game/config.ts 的 CAT_HIDE_SPOTS。
      */
     function pickCat(): void {
-      catchCountedThisSpawn = false;
       const fallback = (): void => {
         catPicIndex = catImgEls.length > 0 ? Math.floor(Math.random() * catImgEls.length) : 0;
         catTheta = mod(Math.random() * TWO_PI);
@@ -511,7 +423,7 @@ import { drawShareCardTime } from './ui/share-card';
         camera.updateProjectionMatrix();
       }
       // 菜单页（未开局）不常驻渲染，resize 后重绘一帧即可
-      if (!gameStarted && panoReady && scene && camera && renderer) {
+      if (!session.active && panoReady && scene && camera && renderer) {
         updateCamera();
         renderer.render(scene, camera);
       }
@@ -714,143 +626,21 @@ import { drawShareCardTime } from './ui/share-card';
       ctx.fillRect(0, 0, w, h);
     }
 
-    function stopWinScreenAnimation(): void {
-      if (winConfettiRaf) {
-        cancelAnimationFrame(winConfettiRaf);
-        winConfettiRaf = 0;
-      }
-      const wctx = winFxCanvas.getContext('2d');
-      if (wctx) {
-        wctx.setTransform(1, 0, 0, 1, 0, 0);
-        wctx.clearRect(0, 0, winFxCanvas.width, winFxCanvas.height);
-      }
-    }
-
-    interface ConfettiP {
-      x: number;
-      y: number;
-      vx: number;
-      vy: number;
-      ay: number;
-      rot: number;
-      vr: number;
-      w: number;
-      h: number;
-      c: string;
-    }
-
-    function startWinScreenAnimation(): void {
-      stopWinScreenAnimation();
-      const wctx = winFxCanvas.getContext('2d');
-      if (!wctx) return;
-      const parent = winFxCanvas.parentElement;
-      const rect = parent ? parent.getBoundingClientRect() : { width: 400, height: 700 };
-      const cw = Math.max(1, Math.floor(rect.width));
-      const ch = Math.max(1, Math.floor(rect.height));
-      const dprLocal = Math.min(
-        typeof window.devicePixelRatio === 'number' ? window.devicePixelRatio : 1,
-        2,
-      );
-      winFxCanvas.width = cw * dprLocal;
-      winFxCanvas.height = ch * dprLocal;
-      winFxCanvas.style.width = cw + 'px';
-      winFxCanvas.style.height = ch + 'px';
-      wctx.setTransform(dprLocal, 0, 0, dprLocal, 0, 0);
-      const cx = cw * 0.5;
-      const cy = ch * 0.4;
-      const P: ConfettiP[] = [];
-      for (let i = 0; i < 88; i++) {
-        const ang = Math.random() * TWO_PI;
-        const sp = 5 + Math.random() * 14;
-        P.push({
-          x: cx + (Math.random() - 0.5) * 24,
-          y: cy + (Math.random() - 0.5) * 24,
-          vx: Math.cos(ang) * sp,
-          vy: Math.sin(ang) * sp - 3.2,
-          ay: 0.18 + Math.random() * 0.12,
-          rot: Math.random() * TWO_PI,
-          vr: (Math.random() - 0.5) * 0.14,
-          w: 3 + Math.random() * 5,
-          h: 4 + Math.random() * 7,
-          c: WIN_CONFETTI_COLORS[i % WIN_CONFETTI_COLORS.length]!,
-        });
-      }
-      for (let i = 0; i < 36; i++) {
-        P.push({
-          x: Math.random() * cw,
-          y: -10 - Math.random() * 48,
-          vx: (Math.random() - 0.5) * 1.4,
-          vy: 1.4 + Math.random() * 2.2,
-          ay: 0.045,
-          rot: Math.random() * TWO_PI,
-          vr: 0.03 * (Math.random() - 0.5),
-          w: 3 + Math.random() * 4,
-          h: 4 + Math.random() * 5,
-          c: WIN_CONFETTI_COLORS[(i + 3) % WIN_CONFETTI_COLORS.length]!,
-        });
-      }
-      const t0 = performance.now();
-      const frame = (): void => {
-        const elapsed = performance.now() - t0;
-        wctx.clearRect(0, 0, cw, ch);
-        for (const p of P) {
-          p.vy += p.ay;
-          p.x += p.vx;
-          p.y += p.vy;
-          p.vx *= 0.998;
-          p.rot += p.vr;
-          if (p.y > ch + 30 || p.x < -40 || p.x > cw + 40) {
-            continue;
-          }
-          wctx.save();
-          wctx.translate(p.x, p.y);
-          wctx.rotate(p.rot);
-          wctx.fillStyle = p.c;
-          wctx.fillRect(-p.w * 0.5, -p.h * 0.5, p.w, p.h);
-          wctx.restore();
-        }
-        if (elapsed < WIN_FX_MS) {
-          winConfettiRaf = requestAnimationFrame(frame);
-        } else {
-          winConfettiRaf = 0;
-          wctx.clearRect(0, 0, cw, ch);
-        }
-      };
-      winConfettiRaf = requestAnimationFrame(frame);
-    }
-
-    function triggerWinBurstClass(): void {
-      try {
-        elWin.classList.remove('win-burst');
-        void elWin.offsetWidth;
-        elWin.classList.add('win-burst');
-        window.setTimeout(() => {
-          try {
-            elWin.classList.remove('win-burst');
-          } catch {
-            /* ignore */
-          }
-        }, 750);
-      } catch {
-        /* ignore */
-      }
-    }
-
     function drawScene2D(isFluff: boolean): void {
       ctx.clearRect(0, 0, w, h);
       const p = projectCatToScreen();
-      if (p && phase === 'hunt') {
+      if (p && session.phase === 'hunt') {
         tLastSawCatOnScreen = Date.now();
       }
-      if (p && (phase === 'hunt' || phase === 'fluff')) {
+      if (p && (session.phase === 'hunt' || session.phase === 'fluff')) {
         const cy = p.y + Math.sin(lastFrame * 0.006) * 2;
-        const showCaught = phase === 'fluff' && Date.now() < catCaughtUntil;
+        const showCaught = session.phase === 'fluff' && Date.now() < catCaughtUntil;
         drawCatAtScreen(p.x, cy, 1, isFluff, showCaught);
       }
       drawHand();
       drawVignette();
-      if (phase === 'hunt' && tCatSpawn > 0 && !p) {
-        const refT2 = tLastSawCatOnScreen > 0 ? tLastSawCatOnScreen : tCatSpawn;
+      if (session.phase === 'hunt' && session.spawnedAt > 0 && !p) {
+        const refT2 = tLastSawCatOnScreen > 0 ? tLastSawCatOnScreen : session.spawnedAt;
         if (Date.now() - refT2 >= CAT_HINT_NO_SIGHT_MS) {
           const hpt2 = getCatScreenHint();
           if (hpt2) {
@@ -861,13 +651,13 @@ import { drawShareCardTime } from './ui/share-card';
     }
 
     function updateCatchTimeHud(): void {
-      if (!catchRoundTimesSec.length) {
+      if (!session.roundSeconds.length) {
         elCatchTimeHud.textContent = '';
         elCatchTimeHud.style.display = 'none';
         return;
       }
       elCatchTimeHud.style.display = 'block';
-      elCatchTimeHud.textContent = catchRoundTimesSec
+      elCatchTimeHud.textContent = session.roundSeconds
         .map((sec, i) => '第' + String(i + 1) + '次 ' + String(sec) + 's')
         .join(' · ');
     }
@@ -878,19 +668,19 @@ import { drawShareCardTime } from './ui/share-card';
      */
     let lastHudKey = '';
     function updateHUD(): void {
-      if (!gameStarted) return;
-      if (phase === 'intro') {
-        const key = 'intro:' + String(catches) + ':' + String(gyroOn);
+      if (!session.active) return;
+      if (session.phase === 'intro') {
+        const key = 'intro:' + String(session.catches) + ':' + String(gyroOn);
         if (key !== lastHudKey) {
           lastHudKey = key;
-          elTitle.textContent = '找猫中 ' + String(catches) + '/3 · 即将开始';
+          elTitle.textContent = '找猫中 ' + String(session.catches) + '/3 · 即将开始';
           elStats.textContent = '全景 360° ·' + (gyroOn ? ' 陀螺仪已开' : ' 可点补开');
           elCatchTimeHud.textContent = '';
           elCatchTimeHud.style.display = 'none';
           elTimerWrap.style.display = 'block';
         }
-        if (tIntroEnd > 0) {
-          const leftIntro = Math.max(0, tIntroEnd - Date.now());
+        if (session.introEndsAt > 0) {
+          const leftIntro = Math.max(0, session.introEndsAt - Date.now());
           const rIntro = Math.max(0, leftIntro / INTRO_MS);
           elTimerFill.style.transform = 'scaleX(' + String(rIntro) + ')';
         } else {
@@ -900,35 +690,35 @@ import { drawShareCardTime } from './ui/share-card';
       }
       const key =
         'hunt:' +
-        String(catches) +
+        String(session.catches) +
         ':' +
         String(gyroOn) +
         ':' +
-        String(thirdCatEscapes) +
+        String(session.escapeCount) +
         ':' +
-        phase;
+        session.phase;
       if (key !== lastHudKey) {
         lastHudKey = key;
-        elTitle.textContent = '找猫中 ' + String(catches) + '/3';
+        elTitle.textContent = '找猫中 ' + String(session.catches) + '/3';
         elStats.textContent =
           '全景 360° ·' +
           (gyroOn ? ' 陀螺仪已开' : ' 可点补开') +
-          (catches === GAME_CONFIG.catchesToWin - 1 && thirdCatEscapes > 0
+          (session.catches === GAME_CONFIG.catchesToWin - 1 && session.escapeCount > 0
             ? ' · 第3只已溜走 ' +
-              String(thirdCatEscapes) +
+              String(session.escapeCount) +
               '/' +
               String(GAME_CONFIG.maxThirdCatEscapes) +
               ' 次'
             : '');
-        if (phase === 'hunt') {
+        if (session.phase === 'hunt') {
           elTimerWrap.style.display = 'block';
-        } else if (phase === 'fluff') {
+        } else if (session.phase === 'fluff') {
           elTimerWrap.style.display = 'none';
           elTimerFill.style.transform = 'scaleX(0)';
         }
       }
-      if (phase === 'hunt') {
-        const left = HUNT_LIMIT_MS - (Date.now() - tCatSpawn);
+      if (session.phase === 'hunt') {
+        const left = HUNT_LIMIT_MS - (Date.now() - session.spawnedAt);
         const r = Math.max(0, left / HUNT_LIMIT_MS);
         elTimerFill.style.transform = 'scaleX(' + String(r) + ')';
       }
@@ -937,7 +727,7 @@ import { drawShareCardTime } from './ui/share-card';
     let rafActive = false;
     function onFrame(): void {
       rafActive = false;
-      if (!gameStarted) {
+      if (!session.active) {
         if (ctx && w > 0) {
           ctx.clearRect(0, 0, w, h);
         }
@@ -961,35 +751,20 @@ import { drawShareCardTime } from './ui/share-card';
       if (handT > 0) {
         handT = Math.max(0, handT - dt * 1.2);
       }
-      if (phase === 'intro' && tIntroEnd > 0 && Date.now() >= tIntroEnd) {
-        tIntroEnd = 0;
-        endIntroToHunt();
-      }
-      if (phase === 'hunt' && tCatSpawn > 0) {
-        if (Date.now() - tCatSpawn > HUNT_LIMIT_MS) {
-          playMeow(true);
-          pickCat();
-          tCatSpawn = Date.now();
-          tLastSawCatOnScreen = 0;
-          window.setTimeout(() => {
-            playKittenMew();
-          }, 100);
-          updateHUD();
-        }
+      const transition = session.advance(Date.now());
+      if (transition) {
+        if (transition === 'intro-ended') hideGameIntroSub();
+        if (transition === 'expired') playMeow(true);
+        pickCat();
+        tLastSawCatOnScreen = 0;
+        playKittenMew();
+        updateHUD();
       }
       if (panoReady && scene && camera && renderer) {
         updateCamera();
         renderer.render(scene, camera);
       }
-      let isFluff = phase === 'fluff';
-      if (isFluff && Date.now() - fluffT0 > FLUFF_MS) {
-        phase = 'hunt';
-        pickCat();
-        tCatSpawn = Date.now();
-        tLastSawCatOnScreen = 0;
-        isFluff = false;
-        playKittenMew();
-      }
+      const isFluff = session.phase === 'fluff';
       drawScene2D(isFluff);
       updateHUD();
       rafActive = true;
@@ -1003,7 +778,7 @@ import { drawShareCardTime } from './ui/share-card';
     }
 
     function tryHit(touchX: number, touchY: number): void {
-      if (phase !== 'hunt' || !camera || !raycaster) return;
+      if (session.phase !== 'hunt' || !camera || !raycaster) return;
       handAimX = touchX;
       handAimY = touchY;
       handT = 1;
@@ -1017,97 +792,41 @@ import { drawShareCardTime } from './ui/share-card';
       if (dirDot < CAT_HIT_COS && !near2d) {
         playMeow(true);
         pickCat();
-        tCatSpawn = Date.now();
+        session.respawn(Date.now());
         tLastSawCatOnScreen = 0;
         window.setTimeout(() => {
           playKittenMew();
         }, 100);
         return;
       }
-      if (catchCountedThisSpawn) {
-        return;
-      }
-      catchCountedThisSpawn = true;
-      if (!E2E_MODE && shouldThirdCatEscape(catches, thirdCatEscapes)) {
-        thirdCatEscapes += 1;
+      const outcome = session.catch(Date.now(), !E2E_MODE);
+      if (outcome === 'ignored') return;
+      if (outcome === 'escaped') {
         pickCat();
-        /** pickCat 会把 catchCountedThisSpawn 置 false；防同次操作二次 tryHit 误判通关，溜走后的短窗口内禁止再判抓 */
-        catchCountedThisSpawn = true;
-        if (thirdCatEscapeCooldownTimer) {
-          clearTimeout(thirdCatEscapeCooldownTimer);
-          thirdCatEscapeCooldownTimer = 0;
-        }
-        thirdCatEscapeCooldownTimer = window.setTimeout(() => {
-          thirdCatEscapeCooldownTimer = 0;
-          catchCountedThisSpawn = false;
-        }, 420);
-        tCatSpawn = Date.now();
         tLastSawCatOnScreen = 0;
         elTimerWrap.style.display = 'block';
         showCatEscapeSub();
         playMeow(true);
-        window.setTimeout(() => {
-          playKittenMew();
-        }, 80);
         updateHUD();
         return;
       }
-      catchRoundTimesSec.push(elapsedSeconds(tCatSpawn, Date.now()));
       updateCatchTimeHud();
-      catches += 1;
-      if (catches < GAME_CONFIG.catchesToWin) {
-        playCatchWithHappyKittenMew();
+      playCatchWithHappyKittenMew();
+      if (outcome === 'caught') {
         catCaughtUntil = Date.now() + CAUGHT_IMAGE_MS;
-        phase = 'fluff';
-        fluffT0 = Date.now();
-        tCatSpawn = 0;
         elTimerWrap.style.display = 'none';
       } else {
-        phase = 'won';
-        gameStarted = false;
-        tCatSpawn = 0;
-        playCatchWithHappyKittenMew();
-        const sec = ((Date.now() - tGameStart) / 1000).toFixed(1);
-        const bestSec = saveBest(localStorage, Number(sec));
-        window.setTimeout(() => {
-          const _acW2 = ensureAudio();
-          if (_acW2) {
-            try {
-              if (_acW2.state === 'suspended') {
-                void _acW2.resume();
-              }
-            } catch {
-              /* ignore */
-            }
-          }
+        const result = session.result!;
+        resultView.setResult(result, saveBest(localStorage, result.totalSeconds));
+        clearTimeout(resultTimer);
+        resultTimer = window.setTimeout(() => {
+          if (session.result !== result) return;
+          const audio = ensureAudio();
+          if (audio?.state === 'suspended') void audio.resume().catch(() => undefined);
           stopBgm();
           playWinCelebration();
           elStart.style.display = 'none';
-          elWin.style.display = 'flex';
-          try {
-            const wh2 = elWin.querySelector<HTMLElement>('.win-hero');
-            if (wh2) {
-              wh2.classList.remove('win-hero');
-              void wh2.offsetWidth;
-              wh2.classList.add('win-hero');
-            }
-          } catch {
-            /* ignore */
-          }
-          triggerWinBurstClass();
-          startWinScreenAnimation();
-          const wtx = document.getElementById('winTimeText');
-          if (wtx) {
-            const tplW = wtx.getAttribute('data-time-template');
-            const ssec = String(sec);
-            if (tplW && String(tplW).indexOf('{sec}') >= 0) {
-              wtx.textContent = String(tplW).replace(/\{sec\}/g, ssec);
-            } else {
-              wtx.textContent = '总用时 ' + ssec + ' 秒。猫猫终于投入你的怀抱啦。';
-            }
-            wtx.textContent += ' 本机最佳 ' + bestSec.toFixed(1) + ' 秒。';
-          }
-          renderWinLeaderboard(String(sec));
+          resultView.celebrate();
         }, 500);
       }
     }
@@ -1147,7 +866,12 @@ import { drawShareCardTime } from './ui/share-card';
         ptrDown.drag = true;
       }
       if (!ptrDown.drag) return;
-      if (phase === 'hunt' || phase === 'fluff' || phase === 'intro' || (CAT_CAL && !gameStarted)) {
+      if (
+        session.phase === 'hunt' ||
+        session.phase === 'fluff' ||
+        session.phase === 'intro' ||
+        (CAT_CAL && !session.active)
+      ) {
         e.preventDefault();
         const dx = e.clientX - ptrDown.x;
         const dy = e.clientY - ptrDown.y;
@@ -1187,13 +911,18 @@ import { drawShareCardTime } from './ui/share-card';
           panoReady &&
           camera &&
           w > 0 &&
-          (phase === 'intro' || !gameStarted)
+          (session.phase === 'intro' || !session.active)
         ) {
           logCatCalibration(lx, ly);
           ptrDown.id = -1;
           return;
         }
-        if (isShortTap && gameStarted && phase === 'hunt' && Date.now() - ptrDown.time < 800) {
+        if (
+          isShortTap &&
+          session.active &&
+          session.phase === 'hunt' &&
+          Date.now() - ptrDown.time < 800
+        ) {
           tryHit(lx, ly);
         }
       } catch {
@@ -1372,20 +1101,6 @@ import { drawShareCardTime } from './ui/share-card';
       }, CAT_ESCAPE_SUB_MS);
     }
 
-    function endIntroToHunt(): void {
-      if (phase !== 'intro') {
-        return;
-      }
-      phase = 'hunt';
-      hideGameIntroSub();
-      pickCat();
-      tCatSpawn = Date.now();
-      tLastSawCatOnScreen = 0;
-      tGameStart = Date.now();
-      elTimerWrap.style.display = 'block';
-      updateHUD();
-    }
-
     function startGame(): void {
       elStart.style.display = 'none';
       elWin.style.display = 'none';
@@ -1410,58 +1125,25 @@ import { drawShareCardTime } from './ui/share-card';
       gyroQPrevValid = false;
       gyroDeltaSmooth = 0;
       gyroDeltaSmoothPitch = 0;
-      gameStarted = true;
-      catches = 0;
-      thirdCatEscapes = 0;
-      if (thirdCatEscapeCooldownTimer) {
-        clearTimeout(thirdCatEscapeCooldownTimer);
-        thirdCatEscapeCooldownTimer = 0;
-      }
-      catchRoundTimesSec.length = 0;
+      clearTimeout(resultTimer);
+      resultView.reset();
+      session.start(Date.now(), CAT_CAL || E2E_MODE);
       updateCatchTimeHud();
       catCaughtUntil = 0;
-      if (CAT_CAL || E2E_MODE) {
-        phase = 'hunt';
-        tGameStart = Date.now();
+      tLastSawCatOnScreen = 0;
+      if (session.phase === 'hunt') {
         pickCat();
-        tCatSpawn = Date.now();
-        tLastSawCatOnScreen = 0;
         elTimerWrap.style.display = 'block';
         elGameIntroSubWrap.style.display = 'none';
         elGameIntroSubWrap.classList.remove('show');
         elGameIntroSubWrap.setAttribute('aria-hidden', 'true');
       } else {
-        phase = 'intro';
-        tCatSpawn = 0;
-        tIntroEnd = Date.now() + INTRO_MS;
         elTimerWrap.style.display = 'block';
         elTimerFill.style.transform = 'scaleX(1)';
         showGameIntroSub();
       }
       updateHUD();
       ensureFrameLoop();
-    }
-
-    function openCard(): void {
-      stopWinScreenAnimation();
-      const wtx = document.getElementById('winTimeText');
-      const tRaw = wtx ? wtx.textContent : '';
-      const m = tRaw ? tRaw.match(/([\d.]+)\s*秒/) : null;
-      const sec = m ? m[1]! : '?';
-      elWin.style.display = 'none';
-      elCardPanel.style.display = 'flex';
-      const draw = (): void => {
-        drawShareCardTime(cctx, shareCardBgImg, sec);
-      };
-      const dec: Promise<unknown>[] = [];
-      if (shareCardBgImg && typeof shareCardBgImg.decode === 'function') {
-        dec.push(shareCardBgImg.decode().catch(() => undefined));
-      }
-      if (dec.length) {
-        Promise.all(dec).then(draw).catch(draw);
-      } else {
-        window.requestAnimationFrame(draw);
-      }
     }
 
     let lastStartUiAt = 0;
@@ -1520,7 +1202,7 @@ import { drawShareCardTime } from './ui/share-card';
         settingsStore.update({ sound: sound.checked });
         if (!sound.checked) {
           stopBgm();
-        } else if (gameStarted) {
+        } else if (session.active) {
           startBgm();
         }
       });
@@ -1534,7 +1216,7 @@ import { drawShareCardTime } from './ui/share-card';
       motion.addEventListener('change', () => {
         settingsStore.update({ reducedMotion: motion.checked });
         if (motion.checked) {
-          stopWinScreenAnimation();
+          resultView.stopEffects();
         }
       });
     }
@@ -1546,13 +1228,10 @@ import { drawShareCardTime } from './ui/share-card';
       btnStart.addEventListener('click', onStartOrAgainTapped);
       btnAgain.addEventListener('click', onStartOrAgainTapped);
       btnCard.addEventListener('click', () => {
-        openCard();
+        resultView.openCard();
       });
       btnBackWin.addEventListener('click', () => {
-        elCardPanel.style.display = 'none';
-        elWin.style.display = 'flex';
-        triggerWinBurstClass();
-        startWinScreenAnimation();
+        resultView.celebrate();
       });
       btnSaveCard.addEventListener('click', async () => {
         try {
@@ -1588,7 +1267,7 @@ import { drawShareCardTime } from './ui/share-card';
         lastFrame = performance.now();
         if (document.hidden) {
           pauseBgm();
-        } else if (gameStarted && settingsStore.value.sound) {
+        } else if (session.active && settingsStore.value.sound) {
           startBgm(true);
         }
       });

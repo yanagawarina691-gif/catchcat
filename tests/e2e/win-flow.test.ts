@@ -33,6 +33,26 @@ test('catches three cats and reaches the win screen', async ({ page, isMobile })
 
   await expect(page.getByRole('heading', { name: '通关啦！' })).toBeVisible({ timeout: 5_000 });
   await expect(page.getByText('你（本次）')).toBeVisible();
+  const seconds = (await page.locator('#winTimeText').innerText()).match(/([\d.]+)\s*秒/)![1]!;
+  await page.evaluate(() => {
+    document.getElementById('winTimeText')!.textContent = 'Changed display text: 999';
+    const ctx = (document.getElementById('cardCanvas') as HTMLCanvasElement).getContext('2d')!;
+    const texts: string[] = [];
+    (window as unknown as { cardTexts: string[] }).cardTexts = texts;
+    const fillText = ctx.fillText.bind(ctx);
+    ctx.fillText = (text, x, y) => {
+      texts.push(text);
+      fillText(text, x, y);
+    };
+  });
+  await page.locator('#btnCard').click();
+  await expect(page.locator('#cardPanel')).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as { cardTexts: string[] }).cardTexts))
+    .toContain(seconds);
+  await page.locator('#btnBackWin').click();
+  await page.locator('#btnAgain').click();
+  await expect(page.getByText('找猫中 0/3')).toBeVisible();
   expect(errors).toEqual([]);
 });
 
