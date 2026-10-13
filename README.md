@@ -4,9 +4,7 @@
 
 ## 在线试玩 / Live demo
 
-GitHub Pages 启用后，地址为：
-
-`https://<your-github-name>.github.io/catchcat/`
+[打开在线试玩](https://yanagawarina691-gif.github.io/catchcat/)
 
 > 陀螺仪需要 HTTPS。iPhone/iPad 会在点击“开找”后请求动作与方向访问权限；拒绝后仍可拖动画面游玩。
 
@@ -32,7 +30,7 @@ GitHub Pages 启用后，地址为：
 需要 Node.js 22。
 
 ```bash
-npm install
+npm ci
 npm run dev
 ```
 
@@ -43,6 +41,7 @@ npm run lint
 npm run typecheck
 npm test
 npm run build
+npx playwright install chromium webkit
 npm run test:e2e
 ```
 
@@ -71,6 +70,7 @@ npm test
 浏览器测试（Playwright）包含桌面与移动端两个 project：
 
 ```bash
+npx playwright install chromium webkit
 npm run test:e2e
 ```
 
